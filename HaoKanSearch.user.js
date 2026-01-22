@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         好看视频标题搜索
+// @name         好看视频标题搜索 (完美版-防丢失+可配置)
 // @namespace    http://tampermonkey.net/
-// @version      0.0.5
-// @description  在好看视频网页中添加按钮：支持位置记忆、触屏拖拽。左键搜索，右键复制。智能清洗Emoji。
+// @version      0.0.6
+// @description  在好看视频网页中添加按钮：支持配置搜索引擎、边界自动吸附、防丢失、触屏拖拽。
 // @author       SeekFreeSky
 // @downloadURL  https://github.com/SeekFreeSky/HaoKanSearch/blob/main/HaoKanSearch.user.js
 // @updateURL    https://github.com/SeekFreeSky/HaoKanSearch/blob/main/HaoKanSearch.user.js
@@ -19,42 +19,71 @@
 (function() {
     'use strict';
  
-    // 1. 样式定义 (层级调至最高整数，防止被任何弹窗遮挡)
+    // ============================================
+    // ⚙️ 用户配置区 (可在此处修改)
+    // ============================================
+    const CONFIG = {
+        // 是否开启搜索前确认（true: 弹出输入框, false: 直接搜索）
+        confirmBeforeSearch: false,
+        
+        // 搜索引擎列表 (想搜哪里，就在这里改)
+        engines: [
+            {
+                name: '抖音',
+                url: 'https://www.douyin.com/search/%s',
+                enabled: true,
+                active: true // 是否前台打开
+            },
+            {
+                name: 'B站',
+                url: 'https://www.bilibili.com/search?keyword=%s',
+                enabled: true,
+                active: false // 是否后台打开
+            },
+            // 示例：如果你想搜 YouTube，把下面这行注释取消
+            // { name: 'YouTube', url: 'https://www.youtube.com/results?search_query=%s', enabled: false, active: true }
+        ],
+ 
+        // 按钮外观
+        theme: {
+            bg: 'linear-gradient(135deg, #FF6B6B, #EE5D5D)', // 珊瑚红，既显眼又不刺眼
+            shadow: '0 4px 12px rgba(238, 93, 93, 0.4)'
+        }
+    };
+ 
+    // ============================================
+    // 🚀 核心代码区
+    // ============================================
+ 
     const css = `
         #hk-search-btn {
             position: fixed;
-            z-index: 2147483647; /* Max Z-Index */
+            z-index: 2147483647;
             padding: 8px 16px;
             font-size: 13px;
-            background: linear-gradient(135deg, #00C853, #64DD17); /* 鲜亮绿，护眼且醒目 */
+            background: ${CONFIG.theme.bg};
             color: white;
             border: none;
             border-radius: 50px;
-            box-shadow: 0 4px 12px rgba(0, 200, 83, 0.4);
+            box-shadow: ${CONFIG.theme.shadow};
             cursor: move;
             user-select: none;
             font-family: system-ui, -apple-system, sans-serif;
             white-space: nowrap;
-            /* 防止点击时出现高亮框 */
+            transition: transform 0.1s;
             -webkit-tap-highlight-color: transparent;
             outline: none;
         }
-        #hk-search-btn:active {
-            transform: scale(0.95);
-            box-shadow: 0 2px 8px rgba(0, 200, 83, 0.6);
-        }
-        /* 全屏隐藏 */
+        #hk-search-btn:active { transform: scale(0.95); }
         :fullscreen #hk-search-btn { display: none !important; }
         
-        /* 简单的提示框 */
         .hk-toast {
             position: fixed;
-            top: 50%;
-            left: 50%;
+            top: 50%; left: 50%;
             transform: translate(-50%, -50%);
-            background: rgba(0,0,0,0.8);
+            background: rgba(0,0,0,0.85);
             color: #fff;
-            padding: 12px 24px;
+            padding: 10px 20px;
             border-radius: 8px;
             z-index: 2147483647;
             font-size: 14px;
@@ -70,47 +99,37 @@
     `;
     GM_addStyle(css);
  
-    // --- 工具函数 ---
- 
-    function isVideoPage() {
-        return location.href.includes('/v') || !!document.querySelector('video');
+    // 智能获取标题 (含重试逻辑)
+    function getTitle() {
+        // 1. Meta
+        const og = document.querySelector('meta[property="og:title"]');
+        if (og && og.content) return cleanText(og.content);
+        
+        // 2. H1
+        const h1 = document.querySelector('h1.video-info-title, h1');
+        if (h1 && h1.innerText) return cleanText(h1.innerText);
+        
+        // 3. Title fallback
+        return cleanText(document.title);
     }
  
-    function getCleanTitle() {
-        let title = "";
-        
-        // 1. 优先 Meta
-        const ogTitle = document.querySelector('meta[property="og:title"]');
-        if (ogTitle && ogTitle.content) title = ogTitle.content.trim();
-        
-        // 2. 其次 H1
-        else {
-            const h1 = document.querySelector('h1.video-info-title, h1');
-            if (h1) title = h1.innerText.trim();
-            else title = document.title;
-        }
- 
-        // 3. 深度清洗 (新增：去除 Emoji 和 后缀)
-        return title
+    function cleanText(text) {
+        if (!text) return "";
+        return text
             .replace(/[-_\|]\s*好看视频.*/g, '')
             .replace(/[-_\|]\s*百度.*/g, '')
             .replace(/【.*?】/g, '')
-            // 去除 Emoji (Unicode Range)
-            .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') 
-            // 去除常见符号
-            .replace(/[🔥👍❤️]/g, '')
+            .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') // Remove Emoji
             .trim();
     }
  
     function showToast(msg) {
-        const toast = document.createElement('div');
-        toast.className = 'hk-toast';
-        toast.textContent = msg;
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 2000);
+        const t = document.createElement('div');
+        t.className = 'hk-toast';
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 2000);
     }
- 
-    // --- 核心 UI 与交互 ---
  
     function createButton() {
         if (document.getElementById('hk-search-btn')) return;
@@ -118,147 +137,161 @@
         const btn = document.createElement("button");
         btn.id = "hk-search-btn";
         btn.innerHTML = "🔍 搜同款";
-        btn.title = "拖拽移动 | 左键搜索 | 右键复制";
+        btn.title = "左键搜索 | 右键复制";
         
-        // 读取记忆坐标 (如果没有记忆，默认 top:120, right:20)
-        // 注意：我们存储的是具体的 top/left 数值
-        const savedTop = GM_getValue('btn_top', '120px');
-        const savedLeft = GM_getValue('btn_left', ''); // 默认 left 为空，使用 right
-        
-        btn.style.top = savedTop;
-        if (savedLeft) {
-            btn.style.left = savedLeft;
-        } else {
-            btn.style.right = '20px'; // 默认位置
-        }
+        // --- 坐标恢复与边界检查 ---
+        const restorePosition = () => {
+            let top = parseInt(GM_getValue('btn_top', 120));
+            let left = parseInt(GM_getValue('btn_left', document.documentElement.clientWidth - 100));
+            
+            // 强制边界检查 (防止按钮跑出屏幕)
+            const maxLeft = document.documentElement.clientWidth - 80; // 预留宽度
+            const maxTop = document.documentElement.clientHeight - 40; // 预留高度
+            
+            if (left > maxLeft) left = maxLeft;
+            if (top > maxTop) top = maxTop;
+            if (left < 0) left = 10;
+            if (top < 0) top = 100;
  
+            btn.style.left = left + 'px';
+            btn.style.top = top + 'px';
+        };
+        
+        restorePosition();
         document.body.appendChild(btn);
  
-        // --- 统一拖拽逻辑 (兼容鼠标 & 触摸) ---
+        // --- 拖拽逻辑 (封装) ---
         let isDragging = false;
-        let startX, startY, startLeft, startTop;
+        let startX, startY, startL, startT;
  
-        // 处理开始
-        const handleStart = (clientX, clientY) => {
+        const onStart = (cx, cy) => {
             isDragging = false;
-            startX = clientX;
-            startY = clientY;
+            startX = cx; startY = cy;
             const rect = btn.getBoundingClientRect();
-            startLeft = rect.left;
-            startTop = rect.top;
+            startL = rect.left; startT = rect.top;
         };
  
-        // 处理移动
-        const handleMove = (clientX, clientY) => {
-            // 设置阈值，移动超过 3px 才算拖拽，防止点击抖动
-            if (Math.abs(clientX - startX) > 3 || Math.abs(clientY - startY) > 3) {
+        const onMove = (cx, cy) => {
+            if (Math.abs(cx - startX) > 3 || Math.abs(cy - startY) > 3) {
                 isDragging = true;
-                const dx = clientX - startX;
-                const dy = clientY - startY;
-                
-                // 拖拽时改为 left/top 定位
-                btn.style.right = 'auto';
-                btn.style.bottom = 'auto';
-                btn.style.left = `${startLeft + dx}px`;
-                btn.style.top = `${startTop + dy}px`;
+                const newL = startL + (cx - startX);
+                const newT = startT + (cy - startY);
+                btn.style.left = newL + 'px';
+                btn.style.top = newT + 'px';
             }
         };
  
-        // 处理结束
-        const handleEnd = () => {
+        const onEnd = () => {
             if (isDragging) {
-                // 保存位置
-                GM_setValue('btn_top', btn.style.top);
-                GM_setValue('btn_left', btn.style.left);
+                // 保存前再次做边界修正，确保下次加载正常
+                const rect = btn.getBoundingClientRect();
+                GM_setValue('btn_top', rect.top);
+                GM_setValue('btn_left', rect.left);
             }
         };
  
-        // 鼠标事件
+        // Mouse Events
         btn.addEventListener('mousedown', e => {
             if (e.button !== 0) return;
-            handleStart(e.clientX, e.clientY);
-            
-            const onMouseMove = e => handleMove(e.clientX, e.clientY);
-            const onMouseUp = () => {
-                handleEnd();
-                document.removeEventListener('mousemove', onMouseMove);
-                document.removeEventListener('mouseup', onMouseUp);
+            onStart(e.clientX, e.clientY);
+            const move = e => onMove(e.clientX, e.clientY);
+            const up = () => {
+                onEnd();
+                document.removeEventListener('mousemove', move);
+                document.removeEventListener('mouseup', up);
             };
-            document.addEventListener('mousemove', onMouseMove);
-            document.addEventListener('mouseup', onMouseUp);
+            document.addEventListener('mousemove', move);
+            document.addEventListener('mouseup', up);
         });
  
-        // 触摸事件 (手机/平板)
+        // Touch Events
         btn.addEventListener('touchstart', e => {
-            if (e.touches.length > 1) return; // 忽略多指
-            e.preventDefault(); // 防止滚动屏幕
-            handleStart(e.touches[0].clientX, e.touches[0].clientY);
-        }, { passive: false });
- 
+            if (e.touches.length > 1) return;
+            e.preventDefault();
+            onStart(e.touches[0].clientX, e.touches[0].clientY);
+        }, {passive:false});
         btn.addEventListener('touchmove', e => {
             e.preventDefault();
-            handleMove(e.touches[0].clientX, e.touches[0].clientY);
-        }, { passive: false });
+            onMove(e.touches[0].clientX, e.touches[0].clientY);
+        }, {passive:false});
+        btn.addEventListener('touchend', onEnd);
  
-        btn.addEventListener('touchend', () => handleEnd());
+        // --- 窗口大小改变时，自动拉回按钮 ---
+        window.addEventListener('resize', () => {
+            // 简单的防抖，直接调用恢复逻辑
+            setTimeout(restorePosition, 300);
+        });
  
-        // --- 点击与业务逻辑 ---
-        
-        const performSearch = () => {
+        // --- 点击搜索 ---
+        const doSearch = () => {
             if (isDragging) return;
             
-            const keyword = getCleanTitle();
+            let keyword = getTitle();
             if (!keyword) {
-                showToast("⚠️ 未获取到标题");
+                // 简单的重试机制
+                setTimeout(() => {
+                    keyword = getTitle();
+                    if(keyword) goSearch(keyword);
+                    else showToast("⚠️ 未获取到标题");
+                }, 300);
                 return;
             }
-            showToast(`🚀 搜索: ${keyword.substring(0, 10)}...`);
-            const encoded = encodeURIComponent(keyword);
-            GM_openInTab(`https://www.douyin.com/search/${encoded}`, { active: true, insert: true });
-            GM_openInTab(`https://www.bilibili.com/search?keyword=${encoded}`, { active: false, insert: true });
+            goSearch(keyword);
         };
  
-        // 绑定点击 (兼容触摸点击)
-        btn.addEventListener('click', performSearch);
-        btn.addEventListener('touchend', e => {
-            // 如果没有发生拖拽，则触发点击逻辑
-            if (!isDragging) performSearch();
-        });
+        const goSearch = (keyword) => {
+            if (CONFIG.confirmBeforeSearch) {
+                const input = prompt("确认搜索关键词", keyword);
+                if (input === null) return;
+                keyword = input.trim();
+            }
+            
+            showToast(`🚀 搜索: ${keyword.substring(0,8)}...`);
+            const encoded = encodeURIComponent(keyword);
+            
+            CONFIG.engines.forEach(engine => {
+                if (engine.enabled) {
+                    const finalUrl = engine.url.替换('%s', encoded);
+                    GM_openInTab(finalUrl, { active: engine.active, insert: true });
+                }
+            });
+        };
+ 
+        btn.addEventListener('click', doSearch);
+        btn.addEventListener('touchend', () => { if(!isDragging) doSearch(); });
  
         // 右键复制
         btn.addEventListener('contextmenu', e => {
             e.preventDefault();
             if (isDragging) return;
-            const keyword = getCleanTitle();
-            if (keyword) {
-                GM_setClipboard(keyword);
+            const k = getTitle();
+            if (k) {
+                GM_setClipboard(k);
                 showToast("✅ 标题已复制");
             }
         });
     }
  
-    // --- 守卫与轮询 ---
+    // --- 守卫 ---
     let lastUrl = location.href;
     setInterval(() => {
-        // 路由检测
         if (location.href !== lastUrl) {
             lastUrl = location.href;
-            checkState();
+            check();
         }
-        // DOM检测
         if (!document.getElementById('hk-search-btn')) {
             createButton();
-            checkState();
+            check();
         }
     }, 800);
  
-    function checkState() {
+    function check() {
         const btn = document.getElementById('hk-search-btn');
         if (!btn) return;
-        btn.style.display = isVideoPage() ? 'block' : 'none';
+        const isVideo = location.href.includes('/v') || !!document.querySelector('video');
+        btn.style.display = isVideo ? 'block' : 'none';
     }
  
-    // 启动
     createButton();
-    checkState();
+    check();
 })();
