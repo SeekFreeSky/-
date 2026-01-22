@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         好看视频标题搜索
 // @namespace    http://tampermonkey.net/
-// @version      0.0.4
-// @description  在好看视频网页中添加可拖拽按钮：左键点击在抖音/B站搜索，右键点击复制标题。支持自动隐藏、智能提取。
+// @version      0.0.5
+// @description  在好看视频网页中添加按钮：支持位置记忆、触屏拖拽。左键搜索，右键复制。智能清洗Emoji。
 // @author       SeekFreeSky
 // @downloadURL  https://github.com/SeekFreeSky/HaoKanSearch/blob/main/HaoKanSearch.user.js
 // @updateURL    https://github.com/SeekFreeSky/HaoKanSearch/blob/main/HaoKanSearch.user.js
@@ -10,6 +10,8 @@
 // @grant        GM_openInTab
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @run-at       document-idle
 // @license      MIT
 // ==/UserScript==
@@ -17,93 +19,89 @@
 (function() {
     'use strict';
  
-    // 配置：初始位置
-    const INITIAL_TOP = "120px";
-    const INITIAL_RIGHT = "20px";
- 
-    // 1. 样式定义 (增加抓手光标，增加不可选属性防止拖拽时选中文字)
+    // 1. 样式定义 (层级调至最高整数，防止被任何弹窗遮挡)
     const css = `
         #hk-search-btn {
             position: fixed;
-            top: ${INITIAL_TOP};
-            right: ${INITIAL_RIGHT};
-            z-index: 99999;
+            z-index: 2147483647; /* Max Z-Index */
             padding: 8px 16px;
             font-size: 13px;
-            background: linear-gradient(135deg, #2196F3, #21CBF3); /* 蓝色系，更专业 */
+            background: linear-gradient(135deg, #00C853, #64DD17); /* 鲜亮绿，护眼且醒目 */
             color: white;
             border: none;
-            border-radius: 30px;
-            box-shadow: 0 4px 10px rgba(33, 150, 243, 0.4);
-            cursor: move; /* 提示可拖拽 */
-            user-select: none; /* 防止拖拽时文字被选中 */
-            transition: opacity 0.3s, box-shadow 0.3s, transform 0.1s;
-            font-family: sans-serif;
+            border-radius: 50px;
+            box-shadow: 0 4px 12px rgba(0, 200, 83, 0.4);
+            cursor: move;
+            user-select: none;
+            font-family: system-ui, -apple-system, sans-serif;
             white-space: nowrap;
-        }
-        #hk-search-btn:hover {
-            opacity: 1;
-            box-shadow: 0 6px 15px rgba(33, 150, 243, 0.6);
+            /* 防止点击时出现高亮框 */
+            -webkit-tap-highlight-color: transparent;
+            outline: none;
         }
         #hk-search-btn:active {
             transform: scale(0.95);
+            box-shadow: 0 2px 8px rgba(0, 200, 83, 0.6);
         }
         /* 全屏隐藏 */
         :fullscreen #hk-search-btn { display: none !important; }
         
-        /* 简单的提示框样式 */
+        /* 简单的提示框 */
         .hk-toast {
             position: fixed;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background: rgba(0,0,0,0.7);
-            color: white;
-            padding: 10px 20px;
-            border-radius: 5px;
-            z-index: 100000;
+            background: rgba(0,0,0,0.8);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 8px;
+            z-index: 2147483647;
             font-size: 14px;
-            animation: fadeInOut 2s ease forwards;
+            pointer-events: none;
+            animation: hkFade 2s ease forwards;
         }
-        @keyframes fadeInOut {
-            0% { opacity: 0; }
-            10% { opacity: 1; }
+        @keyframes hkFade {
+            0% { opacity: 0; transform: translate(-50%, -40%); }
+            10% { opacity: 1; transform: translate(-50%, -50%); }
             80% { opacity: 1; }
             100% { opacity: 0; }
         }
     `;
     GM_addStyle(css);
  
-    // --- 核心逻辑区 ---
+    // --- 工具函数 ---
  
-    // 判断是否在视频页
     function isVideoPage() {
         return location.href.includes('/v') || !!document.querySelector('video');
     }
  
-    // 获取最纯净的标题 (优先级：Meta标签 > H1 > Title清洗)
-    function getSmartTitle() {
-        // 1. 尝试读取 Open Graph Title (通常最准)
+    function getCleanTitle() {
+        let title = "";
+        
+        // 1. 优先 Meta
         const ogTitle = document.querySelector('meta[property="og:title"]');
-        if (ogTitle && ogTitle.content) {
-            return ogTitle.content.trim();
+        if (ogTitle && ogTitle.content) title = ogTitle.content.trim();
+        
+        // 2. 其次 H1
+        else {
+            const h1 = document.querySelector('h1.video-info-title, h1');
+            if (h1) title = h1.innerText.trim();
+            else title = document.title;
         }
  
-        // 2. 尝试读取 H1
-        const h1 = document.querySelector('h1.video-info-title, h1');
-        if (h1 && h1.innerText.trim()) {
-            return h1.innerText.trim();
-        }
- 
-        // 3. 保底：Title 清洗
-        return document.title
+        // 3. 深度清洗 (新增：去除 Emoji 和 后缀)
+        return title
             .replace(/[-_\|]\s*好看视频.*/g, '')
             .replace(/[-_\|]\s*百度.*/g, '')
             .replace(/【.*?】/g, '')
+            // 去除 Emoji (Unicode Range)
+            .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') 
+            // 去除常见符号
+            .replace(/[🔥👍❤️]/g, '')
             .trim();
     }
  
-    // 提示框函数
     function showToast(msg) {
         const toast = document.createElement('div');
         toast.className = 'hk-toast';
@@ -112,118 +110,155 @@
         setTimeout(() => toast.remove(), 2000);
     }
  
-    // --- UI 创建与拖拽逻辑 ---
+    // --- 核心 UI 与交互 ---
  
-    function createDraggableButton() {
+    function createButton() {
         if (document.getElementById('hk-search-btn')) return;
  
         const btn = document.createElement("button");
         btn.id = "hk-search-btn";
-        btn.innerHTML = "🔍 搜同款 <span style='font-size:10px; opacity:0.8'>(右键复制)</span>";
-        btn.title = "拖拽可移动 | 左键搜索 | 右键复制标题";
+        btn.innerHTML = "🔍 搜同款";
+        btn.title = "拖拽移动 | 左键搜索 | 右键复制";
+        
+        // 读取记忆坐标 (如果没有记忆，默认 top:120, right:20)
+        // 注意：我们存储的是具体的 top/left 数值
+        const savedTop = GM_getValue('btn_top', '120px');
+        const savedLeft = GM_getValue('btn_left', ''); // 默认 left 为空，使用 right
+        
+        btn.style.top = savedTop;
+        if (savedLeft) {
+            btn.style.left = savedLeft;
+        } else {
+            btn.style.right = '20px'; // 默认位置
+        }
+ 
         document.body.appendChild(btn);
  
-        // 1. 拖拽逻辑 (原生 JS 实现，不依赖库)
+        // --- 统一拖拽逻辑 (兼容鼠标 & 触摸) ---
         let isDragging = false;
-        let startX, startY, initialLeft, initialTop;
+        let startX, startY, startLeft, startTop;
  
-        btn.addEventListener('mousedown', (e) => {
-            // 只有左键才能拖拽
-            if (e.button !== 0) return;
-            isDragging = false; // 初始状态
-            startX = e.clientX;
-            startY = e.clientY;
-            
-            // 获取当前位置
+        // 处理开始
+        const handleStart = (clientX, clientY) => {
+            isDragging = false;
+            startX = clientX;
+            startY = clientY;
             const rect = btn.getBoundingClientRect();
-            initialLeft = rect.left;
-            initialTop = rect.top;
+            startLeft = rect.left;
+            startTop = rect.top;
+        };
  
-            const onMouseMove = (moveEvent) => {
-                isDragging = true; // 只要移动了就算拖拽
-                const dx = moveEvent.clientX - startX;
-                const dy = moveEvent.clientY - startY;
+        // 处理移动
+        const handleMove = (clientX, clientY) => {
+            // 设置阈值，移动超过 3px 才算拖拽，防止点击抖动
+            if (Math.abs(clientX - startX) > 3 || Math.abs(clientY - startY) > 3) {
+                isDragging = true;
+                const dx = clientX - startX;
+                const dy = clientY - startY;
                 
-                // 更新位置 (移除 right/bottom 定位，改为 top/left)
+                // 拖拽时改为 left/top 定位
                 btn.style.right = 'auto';
                 btn.style.bottom = 'auto';
-                btn.style.left = `${initialLeft + dx}px`;
-                btn.style.top = `${initialTop + dy}px`;
-            };
+                btn.style.left = `${startLeft + dx}px`;
+                btn.style.top = `${startTop + dy}px`;
+            }
+        };
  
+        // 处理结束
+        const handleEnd = () => {
+            if (isDragging) {
+                // 保存位置
+                GM_setValue('btn_top', btn.style.top);
+                GM_setValue('btn_left', btn.style.left);
+            }
+        };
+ 
+        // 鼠标事件
+        btn.addEventListener('mousedown', e => {
+            if (e.button !== 0) return;
+            handleStart(e.clientX, e.clientY);
+            
+            const onMouseMove = e => handleMove(e.clientX, e.clientY);
             const onMouseUp = () => {
+                handleEnd();
                 document.removeEventListener('mousemove', onMouseMove);
                 document.removeEventListener('mouseup', onMouseUp);
             };
- 
             document.addEventListener('mousemove', onMouseMove);
             document.addEventListener('mouseup', onMouseUp);
         });
  
-        // 2. 点击事件 (区分点击和拖拽)
-        btn.addEventListener('click', (e) => {
-            if (isDragging) return; // 如果是拖拽结束的点击，忽略之
+        // 触摸事件 (手机/平板)
+        btn.addEventListener('touchstart', e => {
+            if (e.touches.length > 1) return; // 忽略多指
+            e.preventDefault(); // 防止滚动屏幕
+            handleStart(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: false });
+ 
+        btn.addEventListener('touchmove', e => {
+            e.preventDefault();
+            handleMove(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: false });
+ 
+        btn.addEventListener('touchend', () => handleEnd());
+ 
+        // --- 点击与业务逻辑 ---
+        
+        const performSearch = () => {
+            if (isDragging) return;
             
-            const keyword = getSmartTitle();
+            const keyword = getCleanTitle();
             if (!keyword) {
-                showToast("未找到标题，请检查页面");
+                showToast("⚠️ 未获取到标题");
                 return;
             }
-            showToast(`正在搜索: ${keyword.substring(0, 10)}...`);
+            showToast(`🚀 搜索: ${keyword.substring(0, 10)}...`);
             const encoded = encodeURIComponent(keyword);
             GM_openInTab(`https://www.douyin.com/search/${encoded}`, { active: true, insert: true });
             GM_openInTab(`https://www.bilibili.com/search?keyword=${encoded}`, { active: false, insert: true });
+        };
+ 
+        // 绑定点击 (兼容触摸点击)
+        btn.addEventListener('click', performSearch);
+        btn.addEventListener('touchend', e => {
+            // 如果没有发生拖拽，则触发点击逻辑
+            if (!isDragging) performSearch();
         });
  
-        // 3. 右键复制事件
-        btn.addEventListener('contextmenu', (e) => {
-            e.preventDefault(); // 阻止默认右键菜单
+        // 右键复制
+        btn.addEventListener('contextmenu', e => {
+            e.preventDefault();
             if (isDragging) return;
- 
-            const keyword = getSmartTitle();
+            const keyword = getCleanTitle();
             if (keyword) {
                 GM_setClipboard(keyword);
-                showToast("✅ 标题已复制到剪贴板");
-            } else {
-                showToast("❌ 复制失败：未找到标题");
+                showToast("✅ 标题已复制");
             }
         });
     }
  
-    // --- 守卫逻辑 (代替 MutationObserver 和 History Hack) ---
- 
+    // --- 守卫与轮询 ---
     let lastUrl = location.href;
-    
-    // 每 500ms 检查一次 URL 变化和按钮状态
-    // 这是最安全、最不干扰网页原生代码的方式
     setInterval(() => {
-        // 1. 检查 URL 变化 (SPA 路由检测)
+        // 路由检测
         if (location.href !== lastUrl) {
             lastUrl = location.href;
-            // URL 变了，说明可能切视频了，重新检查按钮状态
-            checkVisibility();
+            checkState();
         }
- 
-        // 2. 确保按钮存在 (防止被 React/Vue 重新渲染刷掉)
+        // DOM检测
         if (!document.getElementById('hk-search-btn')) {
-            createDraggableButton();
-            checkVisibility();
+            createButton();
+            checkState();
         }
-    }, 500);
+    }, 800);
  
-    function checkVisibility() {
+    function checkState() {
         const btn = document.getElementById('hk-search-btn');
         if (!btn) return;
- 
-        if (isVideoPage()) {
-            btn.style.display = 'block';
-        } else {
-            btn.style.display = 'none';
-        }
+        btn.style.display = isVideoPage() ? 'block' : 'none';
     }
  
     // 启动
-    createDraggableButton();
-    checkVisibility();
- 
+    createButton();
+    checkState();
 })();
