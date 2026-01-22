@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         好看视频标题搜索
 // @namespace    https://github.com/SeekFreeSky/HaoKanSearch
-// @version      0.0.7
-// @description  [最终版] 跨标签页同步位置、即使多开页面也不会冲突；深度清洗标题格式；兼容所有浏览器安全策略。
+// @version      0.0.8
+// @description  [交互重构] 拆分抖音和B站搜索按钮，独立跳转；优化光标体验；保留防丢失、跨标签同步等高级功能。
 // @author       SeekFreeSky
 // @downloadURL  https://github.com/SeekFreeSky/HaoKanSearch/blob/main/HaoKanSearch.user.js
 // @updateURL    https://github.com/SeekFreeSky/HaoKanSearch/blob/main/HaoKanSearch.user.js
@@ -22,42 +22,84 @@
  
     // ================= 配置区 =================
     const CONFIG = {
-        engines: [
-            { name: '抖音', url: 'https://www.douyin.com/search/%s', enabled: true, active: true },
-            { name: 'B站', url: 'https://www.bilibili.com/search?keyword=%s', enabled: true, active: false }
-        ],
         theme: {
-            // 使用深一点的颜色，看起来更沉稳
-            bg: 'linear-gradient(135deg, #6200ea, #651fff)', 
-            shadow: '0 4px 12px rgba(98, 0, 234, 0.4)'
+            bg: 'rgba(0, 0, 0, 0.75)', // 半透明黑底，更显高级
+            text: '#fff',
+            hover: 'rgba(0, 0, 0, 0.9)',
+            douyinColor: '#fe2c55', // 抖音红
+            biliColor: '#23ade5',   // B站蓝
+            shadow: '0 4px 12px rgba(0, 0, 0, 0.3)'
         }
     };
  
     // ================= 样式区 =================
     const css = `
-        #hk-search-btn {
+        /* 主容器：胶囊形状 */
+        #hk-search-wrapper {
             position: fixed;
             z-index: 2147483647;
-            padding: 8px 16px;
-            font-size: 13px;
+            display: flex;
+            align-items: center;
             background: ${CONFIG.theme.bg};
-            color: white;
-            border: none;
+            backdrop-filter: blur(5px);
             border-radius: 50px;
             box-shadow: ${CONFIG.theme.shadow};
-            cursor: move;
+            padding: 4px;
             user-select: none;
-            font-family: system-ui, -apple-system, sans-serif;
-            white-space: nowrap;
-            transition: transform 0.1s, opacity 0.2s; /* 增加不透明度过渡 */
-            -webkit-tap-highlight-color: transparent;
-            outline: none;
+            transition: transform 0.1s, background 0.2s;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            /* 关键：默认光标改为“默认”，只有拖拽时逻辑处理，不再强制显示十字架 */
+            cursor: default; 
         }
-        #hk-search-btn:active { transform: scale(0.95); }
-        /* 拖拽时降低透明度，体验更好 */
-        #hk-search-btn.dragging { opacity: 0.8; box-shadow: none; cursor: grabbing; }
-        :fullscreen #hk-search-btn { display: none !important; }
         
+        /* 内部按钮样式 */
+        .hk-btn-item {
+            padding: 6px 12px;
+            font-size: 13px;
+            color: white;
+            cursor: pointer; /* 鼠标放上去变小手 */
+            border-radius: 20px;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            font-weight: 500;
+        }
+        
+        .hk-btn-item:hover {
+            background: rgba(255,255,255,0.15);
+        }
+ 
+        /* 分割线 */
+        .hk-divider {
+            width: 1px;
+            height: 14px;
+            background: rgba(255,255,255,0.3);
+            margin: 0 2px;
+        }
+ 
+        /* 抖音专属色点缀 */
+        .hk-icon-dy {
+            display: inline-block; width: 8px; height: 8px; 
+            background: ${CONFIG.theme.douyinColor}; 
+            border-radius: 50%; margin-right: 6px;
+        }
+        /* B站专属色点缀 */
+        .hk-icon-bi {
+            display: inline-block; width: 8px; height: 8px; 
+            background: ${CONFIG.theme.biliColor}; 
+            border-radius: 50%; margin-right: 6px;
+        }
+ 
+        /* 拖拽中样式 */
+        #hk-search-wrapper.dragging {
+            opacity: 0.9;
+            transform: scale(1.02);
+            cursor: move; /* 只有真正拖动时才变成移动图标 */
+        }
+ 
+        :fullscreen #hk-search-wrapper { display: none !important; }
+        
+        /* 提示框 */
         .hk-toast {
             position: fixed; top: 50%; left: 50%;
             transform: translate(-50%, -50%);
@@ -85,7 +127,6 @@
             .replace(/[-_\|]\s*百度.*/g, '')
             .replace(/【.*?】/g, '')
             .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')
-            // [关键修正] 将所有换行符、制表符、连续空格替换为单个空格
             .replace(/\s+/g, ' ') 
             .trim();
     }
@@ -93,10 +134,8 @@
     function getTitle() {
         const og = document.querySelector('meta[property="og:title"]');
         if (og && og.content) return cleanText(og.content);
-        
         const h1 = document.querySelector('h1.video-info-title, h1');
         if (h1 && h1.innerText) return cleanText(h1.innerText);
-        
         return cleanText(document.title);
     }
  
@@ -108,78 +147,110 @@
         setTimeout(() => t.remove(), 2000);
     }
  
-    function createButton() {
-        if (document.getElementById('hk-search-btn')) return;
- 
-        const btn = document.createElement("button");
-        btn.id = "hk-search-btn";
-        btn.innerHTML = "🔍 搜同款";
-        btn.title = "左键搜索 | 右键复制 | 自动同步位置";
+    // 执行搜索
+    function performSearch(site) {
+        let keyword = getTitle();
+        if (!keyword) {
+            showToast("⏳ 页面加载中，请稍后...");
+            return;
+        }
         
-        // --- 坐标系统 ---
+        showToast(`🚀 ${site}搜索: ${keyword.substring(0,8)}...`);
+        const encoded = encodeURIComponent(keyword);
+        
+        let url = "";
+        if (site === '抖音') {
+            url = `https://www.douyin.com/search/${encoded}`;
+        } else if (site === 'B站') {
+            url = `https://www.bilibili.com/search?keyword=${encoded}`;
+        }
+        
+        if(url) GM_openInTab(url, { active: true, insert: true });
+    }
+ 
+    function createUI() {
+        if (document.getElementById('hk-search-wrapper')) return;
+ 
+        // 创建主容器
+        const wrapper = document.createElement("div");
+        wrapper.id = "hk-search-wrapper";
+        wrapper.title = "按住空白处可拖拽 | 右键复制标题";
+        
+        // 创建内部结构：[抖音搜] | [B站搜]
+        wrapper.innerHTML = `
+            <div class="hk-btn-item" id="hk-btn-douyin">
+                <span class="hk-icon-dy"></span>抖音
+            </div>
+            <div class="hk-divider"></div>
+            <div class="hk-btn-item" id="hk-btn-bili">
+                <span class="hk-icon-bi"></span>B站
+            </div>
+        `;
+ 
+        // --- 坐标与同步逻辑 (保留原版精华) ---
         const setPos = (left, top) => {
-            // 边界约束
-            const maxL = window.innerWidth - 60;
-            const maxT = window.innerHeight - 40;
-            const finalL = Math.max(0, Math.min(left, maxL));
-            const finalT = Math.max(50, Math.min(top, maxT)); // 顶部预留50px给导航
+            const maxL = window.innerWidth - wrapper.offsetWidth - 10;
+            const maxT = window.innerHeight - wrapper.offsetHeight - 10;
+            // 确保不溢出，且有默认位置
+            const finalL = Math.max(0, Math.min(left, isNaN(maxL) ? window.innerWidth - 160 : maxL));
+            const finalT = Math.max(50, Math.min(top, isNaN(maxT) ? 120 : maxT));
             
-            btn.style.left = finalL + 'px';
-            btn.style.top = finalT + 'px';
+            wrapper.style.left = finalL + 'px';
+            wrapper.style.top = finalT + 'px';
         };
  
         const restorePosition = () => {
-            const l = parseInt(GM_getValue('pos_left', window.innerWidth - 100));
+            const l = parseInt(GM_getValue('pos_left', window.innerWidth - 180));
             const t = parseInt(GM_getValue('pos_top', 120));
             setPos(l, t);
         };
         
-        restorePosition();
-        document.body.appendChild(btn);
+        // 挂载到页面
+        document.body.appendChild(wrapper);
+        // 挂载后再计算一次位置（因为有了宽度）
+        setTimeout(restorePosition, 0);
  
-        // --- [新] 跨标签页同步监听 ---
-        // 当你在 Tab A 拖动结束时，Tab B 会自动更新位置
+        // 跨标签监听
         try {
             GM_addValueChangeListener('pos_top', (name, oldVal, newVal, remote) => {
-                if (remote) restorePosition(); // 只有其他标签页修改时才更新
+                if (remote) restorePosition();
             });
-        } catch(e) { /* 部分油猴管理器可能不支持 */ }
+        } catch(e) {}
  
-        // --- 拖拽逻辑 ---
+        // --- 拖拽与点击逻辑 (区分精细) ---
         let isDragging = false;
         let startX, startY, startL, startT;
  
         const onStart = (cx, cy) => {
             isDragging = false;
             startX = cx; startY = cy;
-            const rect = btn.getBoundingClientRect();
+            const rect = wrapper.getBoundingClientRect();
             startL = rect.left; startT = rect.top;
-            btn.classList.add('dragging'); // 添加样式类
         };
  
         const onMove = (cx, cy) => {
+            // 移动超过 3px 才算拖拽，防止点击时的微颤
             if (Math.abs(cx - startX) > 3 || Math.abs(cy - startY) > 3) {
                 isDragging = true;
+                wrapper.classList.add('dragging');
                 const newL = startL + (cx - startX);
                 const newT = startT + (cy - startY);
-                // 拖拽时使用简单的 style 更新，不存 storage 避免频繁 IO
-                btn.style.left = newL + 'px';
-                btn.style.top = newT + 'px';
+                wrapper.style.left = newL + 'px';
+                wrapper.style.top = newT + 'px';
             }
         };
  
         const onEnd = () => {
-            btn.classList.remove('dragging');
+            wrapper.classList.remove('dragging');
             if (isDragging) {
-                const rect = btn.getBoundingClientRect();
-                // 拖拽结束时才写入存储，触发跨标签同步
+                const rect = wrapper.getBoundingClientRect();
                 GM_setValue('pos_left', rect.left);
                 GM_setValue('pos_top', rect.top);
             }
         };
  
-        // Mouse
-        btn.addEventListener('mousedown', e => {
+        // 绑定拖拽事件到主容器
+        wrapper.addEventListener('mousedown', e => {
             if (e.button !== 0) return;
             onStart(e.clientX, e.clientY);
             const move = e => onMove(e.clientX, e.clientY);
@@ -192,90 +263,69 @@
             document.addEventListener('mouseup', up);
         });
  
-        // Touch
-        btn.addEventListener('touchstart', e => {
+        // 触摸支持
+        wrapper.addEventListener('touchstart', e => {
             if (e.touches.length > 1) return;
-            e.preventDefault();
+            // 不阻止默认，否则没法点击内部按钮？需要测试
+            // e.preventDefault(); 
             onStart(e.touches[0].clientX, e.touches[0].clientY);
-        }, {passive:false});
-        btn.addEventListener('touchmove', e => {
-            e.preventDefault();
+        }, {passive:true});
+        
+        wrapper.addEventListener('touchmove', e => {
+            if(isDragging) e.preventDefault(); // 只有拖拽时阻止滚动
             onMove(e.touches[0].clientX, e.touches[0].clientY);
         }, {passive:false});
-        btn.addEventListener('touchend', onEnd);
+        
+        wrapper.addEventListener('touchend', onEnd);
  
-        // Window Resize
-        window.addEventListener('resize', () => setTimeout(restorePosition, 300));
+        // --- 按钮点击事件 ---
+        // 注意：这里需要阻止事件冒泡吗？不需要，因为拖拽逻辑有 isDragging 保护
+        
+        document.getElementById('hk-btn-douyin').addEventListener('click', (e) => {
+            e.stopPropagation(); // 防止触发其他逻辑
+            if (!isDragging) performSearch('抖音');
+        });
  
-        // --- 点击搜索 (安全版) ---
-        const doSearch = () => {
-            if (isDragging) return;
-            
-            let keyword = getTitle();
-            if (!keyword) {
-                // [安全修正] 不要使用 setTimeout 自动打开，会被拦截。
-                // 而是提示用户重试。
-                showToast("⏳ 页面加载中，请稍后再试...");
-                return;
-            }
-            
-            showToast(`🚀 搜索: ${keyword.substring(0,8)}...`);
-            const encoded = encodeURIComponent(keyword);
-            
-            CONFIG.engines.forEach(engine => {
-                if (engine.enabled) {
-                    const finalUrl = engine.url.replace('%s', encoded);
-                    GM_openInTab(finalUrl, { active: engine.active, insert: true });
-                }
-            });
-        };
- 
-        btn.addEventListener('click', doSearch);
-        btn.addEventListener('touchend', () => { if(!isDragging) doSearch(); });
+        document.getElementById('hk-btn-bili').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!isDragging) performSearch('B站');
+        });
  
         // 右键复制
-        btn.addEventListener('contextmenu', e => {
+        wrapper.addEventListener('contextmenu', e => {
             e.preventDefault();
             if (isDragging) return;
             const k = getTitle();
             if (k) {
                 GM_setClipboard(k);
                 showToast("✅ 标题已复制");
-            } else {
-                showToast("⚠️ 暂无标题");
             }
         });
+        
+        // 窗口大小改变
+        window.addEventListener('resize', () => setTimeout(restorePosition, 300));
     }
  
     // --- 守卫 ---
     let lastUrl = location.href;
     setInterval(() => {
-        // SPA 路由检测
         if (location.href !== lastUrl) {
             lastUrl = location.href;
             check();
         }
-        // DOM 丢失检测
-        if (!document.getElementById('hk-search-btn')) {
-            createButton();
+        if (!document.getElementById('hk-search-wrapper')) {
+            createUI();
             check();
-        }
-        // [新] 实时修正位置：如果当前没有在拖拽，强制同步一次位置
-        // 防止 resize 事件漏掉导致的溢出
-        const btn = document.getElementById('hk-search-btn');
-        if (btn && !btn.classList.contains('dragging')) {
-           // 这里不读取 storage，只做简单的边界溢出检查即可
-           // (代码省略，restorePosition 里的逻辑已经足够强)
         }
     }, 1000);
  
     function check() {
-        const btn = document.getElementById('hk-search-btn');
-        if (!btn) return;
+        const wrapper = document.getElementById('hk-search-wrapper');
+        if (!wrapper) return;
         const isVideo = location.href.includes('/v') || !!document.querySelector('video');
-        btn.style.display = isVideo ? 'block' : 'none';
+        wrapper.style.display = isVideo ? 'flex' : 'none';
     }
  
-    createButton();
+    createUI();
     check();
 })();
