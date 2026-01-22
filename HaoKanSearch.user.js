@@ -6,6 +6,7 @@
 // @author       SeekFreeSky
 // @downloadURL  https://github.com/SeekFreeSky/HaoKanSearch/blob/main/HaoKanSearch.user.js
 // @updateURL    https://github.com/SeekFreeSky/HaoKanSearch/blob/main/HaoKanSearch.user.js
+// @match        *://haokan.baidu.com/*
 // @grant        GM_openInTab
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
